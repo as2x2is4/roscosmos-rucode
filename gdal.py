@@ -5,6 +5,7 @@ from multiprocessing import Process, JoinableQueue, Lock
 from joblib import Parallel, delayed
 
 
+draw_every_Nth_img = 4
 
 def decode_mask(mask):
 	pixels = mask.T.flatten()
@@ -40,11 +41,11 @@ def run_change_det(infile):
 
         img_bands.append(outband_arr.astype('uint8'))
 
-        if iBand%4 != 0: continue # Draw onky red
+        if iBand%draw_every_Nth_img != 0: continue # Draw only N-th image
         outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_Xband_" + BandName[iBand] + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
         outdataset.GetRasterBand(1).WriteArray(outband_arr)
 
-    band_grad_bin = []
+    band_grads = []
     for iBand in range(0, indataset.RasterCount):
         #grad = cv2.Laplacian(img_bands[iBand], cv2.CV_64F, ksize=11)
         #dx, dy = cv2.spatialGradient(img_bands[iBand], ksize=3)
@@ -54,27 +55,28 @@ def run_change_det(infile):
 
         grad = np.absolute(dx) + np.absolute(dy)
 
-        num_zeros = (grad == 0).sum()
-        num_others = (grad > 0).sum()
-        gradmean = grad.mean()*(num_zeros + num_others)/num_others
-        grad = (grad*255.0/(gradmean*2.0))
+        # num_zeros = (grad == 0).sum()
+        # num_others = (grad > 0).sum()
+        # gradmean = grad.mean()*(num_zeros + num_others)/num_others
+        # grad = (grad*255.0/(gradmean*2.0))
+        grad =grad*0.33
         grad[grad > 255] = 255
         #grad = (grad > gradmean)*255.0
 
-        band_grad_bin.append(grad)
+        band_grads.append(grad)
 
-        if iBand%4 != 0: continue # Draw onky red
+        if iBand%draw_every_Nth_img != 0: continue # Draw only N-th image
         outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_Xgrad_" + BandName[iBand] + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
         outdataset.GetRasterBand(1).WriteArray(grad)
 
     band_grad_diff = []
     for iBand in range(0, 4):
-        grad_diff = np.absolute(band_grad_bin[iBand + 4].astype('int') - band_grad_bin[iBand].astype('int'))
+        grad_diff = band_grads[iBand + 4] - band_grads[iBand]
         #grad_diff = grad_diff.astype('uint8')
         grad_diff[grad_diff < 0] = 0
         band_grad_diff.append(grad_diff)
 
-        if iBand%4 != 0: continue # Draw onky red
+        if iBand%draw_every_Nth_img != 0: continue # Draw only N-th image
         outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXgrDif_" + BandName[iBand] + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
         outdataset.GetRasterBand(1).WriteArray(grad_diff)
 
@@ -101,7 +103,11 @@ def run_change_det(infile):
         # kernel = np.ones((2,2),np.uint8)
         # diff_arr = cv2.morphologyEx(diff_arr, cv2.MORPH_CLOSE, kernel)
 
-        img_band_mask.append(diff_arr); continue
+        #####   STOP HERE #####   STOP HERE #####   STOP HERE #####   STOP HERE 
+        #####   STOP HERE #####   STOP HERE #####   STOP HERE #####   STOP HERE 
+        img_band_mask.append(diff_arr); 
+        continue
+        ##if iBand%draw_every_Nth_img != 0: continue # Draw only N-th image
 
         outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXdiff_" + BandName[iBand] + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
         outdataset.GetRasterBand(1).WriteArray(diff_arr*255)
@@ -158,13 +164,13 @@ def run_change_det(infile):
     ###return
 
     ### intersect + bound_mask ### intersect + bound_mask ### intersect + bound_mask 
-    intersect = (intersect > 196)*1
+    intersect = (intersect > 224)*1
     bound_mask = cv2.blur((img_bands[0] == 0) * 255,(5,5))
     intersect[bound_mask > 0] = 0
 
     # cv2.morphologyEx
     kernel = np.ones((3,3),np.uint8)
-    intersect = cv2.morphologyEx(intersect, cv2.MORPH_CLOSE, kernel)
+    intersect = cv2.morphologyEx(intersect.astype('uint8'), cv2.MORPH_CLOSE, kernel)
 
     ### connectedComponentsWithStats ### connectedComponentsWithStats 
     nb_components, output, stats, centroids = cv2.connectedComponentsWithStats(intersect, connectivity=8)
