@@ -40,11 +40,12 @@ def run_change_det(infile):
 
         img_bands.append(outband_arr)
 
-        outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_BNDeq_" + BandName[iBand] + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
+        #if iBand >= 2 continue # Draw onky red
+        outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_Xband_" + BandName[iBand] + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
         outdataset.GetRasterBand(1).WriteArray(outband_arr)
 
     img_band_mask = []
-    band_diff_thr = [28, 22, 18, 26]
+    band_diff_thr = [28, 18, 16, 24]
 
     for iBand in range(0, 4):
         diff_arr = np.absolute(img_bands[iBand].astype('int') - img_bands[iBand+4].astype('int'))
@@ -67,7 +68,7 @@ def run_change_det(infile):
         # kernel = np.ones((2,2),np.uint8)
         # diff_arr = cv2.morphologyEx(diff_arr, cv2.MORPH_CLOSE, kernel)
 
-        outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXdifClose_" + BandName[iBand] + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
+        outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXdiff_" + BandName[iBand] + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
         outdataset.GetRasterBand(1).WriteArray(diff_arr*255)
 
 ###        img_band_mask.append(diff_arr); continue
@@ -81,7 +82,7 @@ def run_change_det(infile):
         # minimum size of particles we want to keep (number of pixels)
         #here, it's a fixed value, but you can set it as you want, eg the mean of the sizes or whatever
         max_size = 9995  
-        min_size = 30  
+        min_size = 100  
 
         #your answer image
         diff_cc_filter = np.zeros((diff_arr.shape))
@@ -97,22 +98,47 @@ def run_change_det(infile):
         outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXdifCC_" + BandName[iBand] + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
         outdataset.GetRasterBand(1).WriteArray(diff_cc_filter*255)
 
+    ### RESULT ### RESULT ### RESULT ### RESULT 
+    ### RESULT ### RESULT ### RESULT ### RESULT 
+    ### RESULT ### RESULT ### RESULT ### RESULT 
+
+    ### intersect + bound_mask ### intersect + bound_mask ### intersect + bound_mask 
     intersect = img_band_mask[0] + img_band_mask[1] + img_band_mask[2] + img_band_mask[3]
     bound_mask = cv2.blur((img_bands[0] == 0) * 255,(5,5))
     intersect[bound_mask > 0] = 0
-    outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXresult" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
-    outdataset.GetRasterBand(1).WriteArray(((intersect >= 3))*255)
+    intersect = ((intersect >= 3)*1).astype('uint8')
 
-    mask = decode_mask((intersect >= 2).astype(bool))
+    # cv2.morphologyEx
+    kernel = np.ones((3,3),np.uint8)
+    intersect = cv2.morphologyEx(intersect, cv2.MORPH_CLOSE, kernel)
+
+    ### connectedComponentsWithStats ### connectedComponentsWithStats 
+    nb_components, output, stats, centroids = cv2.connectedComponentsWithStats(intersect, connectivity=8)
+    sizes = stats[1:, -1]; nb_components = nb_components - 1
+
+    # minimum size of particles we want to keep (number of pixels)
+    max_size = 9995
+    min_size = 200
+
+    #your answer image
+    cc_filter = np.zeros((intersect.shape))
+    #for every component in the image, you keep it only if it's above min_size
+    for i in range(0, nb_components):
+        if sizes[i] >= min_size:
+            if sizes[i] <= max_size:
+                cc_filter[output == i + 1] = 1
+
+    outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXXresult" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
+    outdataset.GetRasterBand(1).WriteArray(cc_filter*255)
+
+    mask = decode_mask((cc_filter > 0).astype(bool))
     file_submission.write(infile.replace('.tif', '') + "," + mask + '\n')
     print(infile + " -- Done")
 
 
 
 ######### FUN END ### FUN END ### FUN END ### FUN END ### FUN END 
-
 ######### FUN END ### FUN END ### FUN END ### FUN END ### FUN END 
-
 ######### FUN END ### FUN END ### FUN END ### FUN END ### FUN END 
 
 
