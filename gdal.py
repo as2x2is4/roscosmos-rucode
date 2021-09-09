@@ -1,3 +1,11 @@
+import cv2
+import numpy as np
+from osgeo import gdal
+from multiprocessing import Process, JoinableQueue, Lock
+from joblib import Parallel, delayed
+
+
+
 def decode_mask(mask):
 	pixels = mask.T.flatten()
 	pixels = np.concatenate([[0], pixels, [0]])
@@ -5,25 +13,8 @@ def decode_mask(mask):
 	runs[1::2] -= runs[::2]
 	return " ".join(str(x) for x in runs)
 
-import cv2
-import numpy as np
-
-from osgeo import gdal
-#gdal.TermProgress = gdal.TermProgress_nocb
-
-infolder = "f:/@Data/@Satellite/!!! roscosmos-rucode/Images_composit/Images_composit/8_ch/"
-#infolder = "f:/@Data/@Satellite/!!! roscosmos-rucode/mask/img/"
-
-outfolder = "f:/@Data/@Satellite/!!! roscosmos-rucode/Images_out_sub/"
-#outfolder = "f:/@Data/@Satellite/!!! roscosmos-rucode/Images_out/"
-
-BandName = ["1Red0", "2Grn0", "3Blu0", "4NIR0","1Red1", "2Grn1", "3Blu1", "4NIR1",]
-
-file_submission = open(outfolder + "submission.csv", "w")
-file_submission.write("Id,mask" + '\n')
-
-from os import listdir
-for infile in listdir(infolder):
+def run_change_det(infile):
+    BandName = ["1Red0", "2Grn0", "3Blu0", "4NIR0","1Red1", "2Grn1", "3Blu1", "4NIR1",]
     #infile = "KVI_20180922_SCN4_UN93__KV1_20190804_SCN2_UN94.tif"
     outfile = infile
 
@@ -54,6 +45,7 @@ for infile in listdir(infolder):
 
     img_band_mask = []
     band_diff_thr = [28, 22, 18, 26]
+
     for iBand in range(0, 4):
         diff_arr = np.absolute(img_bands[iBand].astype('int') - img_bands[iBand+4].astype('int'))
         #bands_cloud_mask = np.absolute(img_bands_cloud[iBand] + img_bands_cloud[iBand+4])
@@ -106,16 +98,39 @@ for infile in listdir(infolder):
         outdataset.GetRasterBand(1).WriteArray(diff_cc_filter*255)
 
     intersect = img_band_mask[0] + img_band_mask[1] + img_band_mask[2] + img_band_mask[3]
+    bound_mask = cv2.blur((img_bands[0] == 0) * 255,(5,5))
+    intersect[bound_mask > 0] = 0
     outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXresult" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
     outdataset.GetRasterBand(1).WriteArray(((intersect >= 3))*255)
 
     mask = decode_mask((intersect >= 2).astype(bool))
     file_submission.write(infile.replace('.tif', '') + "," + mask + '\n')
+    print(infile + " -- Done")
+
+
+
+######### FUN END ### FUN END ### FUN END ### FUN END ### FUN END 
+
+######### FUN END ### FUN END ### FUN END ### FUN END ### FUN END 
+
+######### FUN END ### FUN END ### FUN END ### FUN END ### FUN END 
+
+
+infolder = "f:/@Data/@Satellite/!!! roscosmos-rucode/Images_composit/Images_composit/8_ch/"
+#infolder = "f:/@Data/@Satellite/!!! roscosmos-rucode/mask/img/"
+
+outfolder = "f:/@Data/@Satellite/!!! roscosmos-rucode/Images_out_sub/"
+#outfolder = "f:/@Data/@Satellite/!!! roscosmos-rucode/Images_out/"
+
+file_submission = open(outfolder + "submission.csv", "w")
+file_submission.write("Id,mask" + '\n')
+
+from os import listdir
+# for infile in listdir(infolder):#[3:4]:
+#     run_change_det(infile)
+
+Parallel(n_jobs=-1, verbose=0, backend="threading")(
+             map(delayed(run_change_det), listdir(infolder)))
 
 file_submission.close()
 print("Done")
-
-
-### OUT ### OUT ### OUT ### OUT ### OUT ### OUT ### OUT 0
-### OUT ### OUT ### OUT ### OUT ### OUT ### OUT ### OUT 0
-### OUT ### OUT ### OUT ### OUT ### OUT ### OUT ### OUT 0
