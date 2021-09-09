@@ -53,18 +53,19 @@ for infile in listdir(infolder):
         outdataset.GetRasterBand(1).WriteArray(outband_arr)
 
     img_band_mask = []
+    band_diff_thr = [28, 22, 18, 26]
     for iBand in range(0, 4):
         diff_arr = np.absolute(img_bands[iBand].astype('int') - img_bands[iBand+4].astype('int'))
         #bands_cloud_mask = np.absolute(img_bands_cloud[iBand] + img_bands_cloud[iBand+4])
 
         # Threshold # Threshold # Threshold 
-        diff_arr = ( (diff_arr > 24) * 1 ).astype('uint8')
+        diff_arr = ( (diff_arr > band_diff_thr[iBand]) * 1 ).astype('uint8')
 
         # # ### Correct CLOUDS by Threshold
-        # thr_cloud  = 0.7
+        thr_cloud  = 0.9
         # thr_shadow  = 0.4
         # diff_arr[img_bands[iBand] > img_bands[iBand].max()*thr_cloud] = 0
-        # diff_arr[img_bands[iBand+4] > img_bands[iBand+4].max()*thr_cloud] = 0
+        diff_arr[img_bands[iBand+4] > img_bands[iBand+4].max()*thr_cloud] = 0
         # diff_arr[img_bands[iBand] < img_bands[iBand].max()*thr_shadow] = 0
         # diff_arr[img_bands[iBand+4] < img_bands[iBand+4].max()*thr_shadow] = 0
         
