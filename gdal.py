@@ -5,14 +5,14 @@ from multiprocessing import Process, JoinableQueue, Lock
 from joblib import Parallel, delayed
 
 
-draw_first_N_img_pair = 1
+draw_first_N_img_pair = 0
 
 def decode_mask(mask):
-	pixels = mask.T.flatten()
-	pixels = np.concatenate([[0], pixels, [0]])
-	runs = np.where(pixels[1:] != pixels[:-1])[0] + 1
-	runs[1::2] -= runs[::2]
-	return " ".join(str(x) for x in runs)
+    pixels = mask.T.flatten()
+    pixels = np.concatenate([[0], pixels, [0]])
+    runs = np.where(pixels[1:] != pixels[:-1])[0] + 1
+    runs[1::2] -= runs[::2]
+    return " ".join(str(x) for x in runs)
 
 def run_change_det(infile):
     BandName = ["1Red0", "2Grn0", "3Blu0", "4NIR0","1Red1", "2Grn1", "3Blu1", "4NIR1",]
@@ -21,8 +21,13 @@ def run_change_det(infile):
 
     indataset = gdal.Open(infolder + infile, gdal.GA_ReadOnly )
 
+    bound_mask = np.array(indataset.GetRasterBand(1).ReadAsArray())
+    bound_mask = cv2.blur((bound_mask == 0) * 255.0,(9,9))
+    num_zeros = (bound_mask == 0).sum()
+    num_others = (bound_mask > 0).sum()
+
     img_bands = []
-    img_band_cloud_mask = []
+    img_band_cloud_masks = []
     for iBand in range(0, indataset.RasterCount):
         inband = indataset.GetRasterBand(1 + iBand)
         outband_arr=np.array(inband.ReadAsArray())
@@ -30,10 +35,8 @@ def run_change_det(infile):
         ## .max() + .mean() ### .max() + .mean() ### .max() + .mean() ### .max()
         bandmax = outband_arr.max()
         bandmean = outband_arr.mean()
-        num_zeros = (outband_arr == 0).sum()
-        num_others = (outband_arr > 0).sum()
         bandmean = bandmean*(num_zeros + num_others)/num_others
-        outband_arr = (outband_arr*128.0/bandmean)
+        outband_arr = (outband_arr * 128.0/bandmean)
         outband_arr[outband_arr > 255] = 255
 
         # ### cv2.equalizeHist ### cv2.equalizeHist ### cv2.equalizeHist 
@@ -42,25 +45,10 @@ def run_change_det(infile):
         # outband_arr = cv2.equalizeHist(outband_arr) ### OPENCV
 
         ### CLOUDS ### CLOUDS ### CLOUDS ### CLOUDS  
-        band_cloud_mask = (outband_arr >= 255*0.975)*255
-        # ### connectedComponentsWithStats ### connectedComponentsWithStats 
-        # nb_components, output, stats, centroids = cv2.connectedComponentsWithStats(band_cloud_mask.astype('uint8'), connectivity=8)
-        # sizes = stats[1:, -1]; nb_components = nb_components - 1
-        # min_size = 169
-
-        # cc_filter = np.zeros((band_cloud_mask.shape))
-        # #for every component in the image, you keep it only if it's above min_size
-        # for i in range(0, nb_components):
-        #     if sizes[i] >= min_size:
-        #         cc_filter[output == i + 1] = 255
-
-        # band_cloud_mask = cv2.blur(cc_filter,(25,25))
-        # band_cloud_mask = (band_cloud_mask > 6.25)*255
-        # img_band_cloud_mask.append(band_cloud_mask)
-
-        band_cloud_mask = cv2.blur((band_cloud_mask > 0)*100.0,(25,25))
-        band_cloud_mask = (band_cloud_mask > 10.0)*255
-        img_band_cloud_mask.append(band_cloud_mask)
+        band_cloud_mask = (outband_arr >= 255*5.999)*255
+        # band_cloud_mask = cv2.blur((band_cloud_mask > 0)*100.0,(25,25))
+        # band_cloud_mask = (band_cloud_mask > 10.0)*255
+        img_band_cloud_masks.append(band_cloud_mask)
         # outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_Xband_cloud_mask_" + BandName[iBand] + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
         # outdataset.GetRasterBand(1).WriteArray(band_cloud_mask)
 
@@ -71,16 +59,26 @@ def run_change_det(infile):
         outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_Xband_" + BandName[iBand] + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
         outdataset.GetRasterBand(1).WriteArray(outband_arr)
     
+    img_cloud_mask = img_band_cloud_masks[0]
+    for icloud in range(0, 8):
+        img_cloud_mask[img_band_cloud_masks[icloud] > 0] = 255
+
+    grad_cloud_mask = img_bands[0] * 0
     band_grads = []
     for iBand in range(0, indataset.RasterCount):
-        #grad = cv2.Laplacian(img_bands[iBand], cv2.CV_64F, ksize=11)
-        #dx, dy = cv2.spatialGradient(img_bands[iBand], ksize=3)
-
-        dx = cv2.Sobel(img_bands[iBand],cv2.CV_64F,1,0,ksize=5)
-        dy = cv2.Sobel(img_bands[iBand],cv2.CV_64F,0,1,ksize=5)
+        ## DX + DY
+        dx = cv2.Sobel(img_bands[iBand],cv2.CV_64F,1,0,ksize=9)
+        dy = cv2.Sobel(img_bands[iBand],cv2.CV_64F,0,1,ksize=9)
 
         grad = np.absolute(dx) + np.absolute(dy)
-        grad =grad*0.33
+        # grad = grad * (16.0/(9*9)/256)
+
+        gradmean = grad.mean()
+        gradmean = gradmean*(num_zeros + num_others)/num_others
+        grad = grad * 32.0 / gradmean
+
+        #if iBand >=4: grad_cloud_mask[grad > 0.75*grad.max()] = 255
+
         grad[grad > 255] = 255
         #grad = (grad > gradmean)*255.0
 
@@ -92,14 +90,16 @@ def run_change_det(infile):
 
     band_grad_diff = []
     for iBand in range(0, 4):
-        grad_diff = band_grads[iBand + 4] - band_grads[iBand]
+        grad_diff = band_grads[iBand + 4].astype('int') - band_grads[iBand].astype('int')
         #grad_diff = grad_diff.astype('uint8')
+        #grad_diff = grad_diff * 8.0
+        grad_diff[grad_diff > 255] = 255
         grad_diff[grad_diff < 0] = 0
-        grad_diff[img_band_cloud_mask[iBand] > 0] = 0
-        grad_diff[img_band_cloud_mask[iBand + 4] > 0] = 0
+        grad_diff[img_cloud_mask > 0] = 0
+        grad_diff[bound_mask > 0] = 0
 
         ### FORM CORRECT 
-        grad_diff = cv2.medianBlur(grad_diff.astype('uint8'), 5)
+        # grad_diff = cv2.medianBlur(grad_diff.astype('uint8'), 5)
         # kernel = np.ones((2,2),np.uint8)
         # grad_diff = cv2.morphologyEx(grad_diff, cv2.MORPH_CLOSE, kernel)
 
@@ -114,10 +114,10 @@ def run_change_det(infile):
     for iBand in range(0, 4):
         diff_arr = np.absolute(img_bands[iBand].astype('int') - img_bands[iBand+4].astype('int'))
 
-        diff_arr = diff_arr*64.0 / band_diff_thr[iBand]
-        diff_arr[diff_arr > 64] = 64
-        diff_arr[img_band_cloud_mask[iBand] > 0] = 0
-        diff_arr[img_band_cloud_mask[iBand + 4] > 0] = 0
+        diff_arr = diff_arr*255.0 / band_diff_thr[iBand]
+        diff_arr[diff_arr > 255] = 255
+        diff_arr[img_cloud_mask > 0] = 0
+
         diff_arr = diff_arr.astype('uint8')
 
         ### FORM CORRECT 
@@ -135,67 +135,95 @@ def run_change_det(infile):
     ### RESULT ### RESULT ### RESULT ### RESULT 
     ### RESULT ### RESULT ### RESULT ### RESULT 
 
-    ### GRAD INTERSECT ### GRAD INTERSECT ### GRAD INTERSECT 
-    band_grad_mask = band_grad_diff[0].astype('int') + band_grad_diff[1] + band_grad_diff[2] + band_grad_diff[3]
-    band_grad_mask = band_grad_mask * 0.25
-    band_grad_mask[band_grad_mask > 255] = 255
-    #band_grad_mask = cv2.medianBlur(band_grad_mask.astype('uint8'), 5)
-    # kernel = np.ones((11,11),np.uint8)
-    # band_grad_mask = cv2.morphologyEx(band_grad_mask.astype('uint8'), cv2.MORPH_CLOSE, kernel)
-
-    outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXX_GRADS" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
-    outdataset.GetRasterBand(1).WriteArray(band_grad_mask)
-
     ### COLOR DIFF INTERSECT ### COLOR DIFF INTERSECT ### COLOR DIFF INTERSECT 
+    #band_color_dif = np.maximum(np.maximum(img_band_diff[0], img_band_diff[1]), np.maximum(img_band_diff[2], img_band_diff[3]))
     band_color_dif = img_band_diff[0].astype('int') + img_band_diff[1] + img_band_diff[2] + img_band_diff[3]
-    band_color_dif[band_color_dif > 255] = 255
+    band_color_dif = (band_color_dif / 4.0)
+    band_color_dif = band_color_dif.astype('uint8')
+    #band_color_dif[band_color_dif > 255] = 255
     #band_color_dif = cv2.medianBlur(band_color_dif.astype('uint8'), 5)
     outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXX_COLORS" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
     outdataset.GetRasterBand(1).WriteArray(band_color_dif)
 
-    ### INTERSECT BOTH ### INTERSECT BOTH ### INTERSECT BOTH 
-    band_grad_mask = (band_grad_mask > 64)*255
-    band_grad_mask = cv2.medianBlur(band_grad_mask.astype('uint8'), 11)
-    # kernel = np.ones((25,25),np.uint8)
-    # band_grad_mask = cv2.morphologyEx(band_grad_mask.astype('uint8'), cv2.MORPH_CLOSE, kernel)
-    band_grad_mask = cv2.blur((band_grad_mask > 0)*100.0,(33,33))
-    band_grad_mask = (band_grad_mask > 10.0)*255
-    intersect = np.minimum(band_color_dif, band_grad_mask)
+    ### COLORS GARAD ### COLORS GARAD ### COLORS GARAD 
+    dx = cv2.Sobel(band_color_dif,cv2.CV_64F,1,0,ksize=9)
+    dy = cv2.Sobel(band_color_dif,cv2.CV_64F,0,1,ksize=9)
+    grad_colors = np.absolute(dx) + np.absolute(dy)
+    grad_colors[bound_mask > 0] = 0
+
+    # grad_colors = grad_colors * 32.0 / (grad_colors.mean())
+    # grad_colors[grad_colors > 255] = 255
+
+    gradmean = grad_colors.mean()
+    gradmean = gradmean*(num_zeros + num_others)/num_others
+    grad_colors = grad_colors * 32.0 / gradmean
+    #grad_colors = grad_colors * 255.0 / (grad_colors.max())
+    grad_colors[grad_colors > 255] = 255
+    grad_colors = (grad_colors).astype('uint8')
+
+    #grad_colors = cv2.equalizeHist(grad_colors) ### OPENCV
+
+    #band_color_dif = cv2.medianBlur(band_color_dif.astype('uint8'), 5)
+    outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXX_GRADS_COLORS" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
+    outdataset.GetRasterBand(1).WriteArray(grad_colors)
+
+    ### GRAD INTERSECT ### GRAD INTERSECT ### GRAD INTERSECT 
+    band_grad_mask = band_grad_diff[0].astype('int') + band_grad_diff[1] + band_grad_diff[2] + band_grad_diff[3]
+    band_grad_mask[bound_mask > 0] = 0
+    #band_grad_mask = (band_grad_mask / 4.0)
+    band_grad_mask = band_grad_mask * 255.0 / (band_grad_mask.max())
+    band_grad_mask[band_grad_mask > 255] = 255
+    band_grad_mask = band_grad_mask.astype('uint8')
+
+    #band_grad_mask = cv2.equalizeHist(band_grad_mask) ### OPENCV
+
+    outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXX_GRADS_BAND" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
+    outdataset.GetRasterBand(1).WriteArray(band_grad_mask)
+
+    ### INTERSECT ALL ### INTERSECT ALL ### INTERSECT ALL ###
+    band_grad_mask = np.minimum(band_grad_mask, grad_colors)
+    # band_grad_mask = band_grad_mask.astype('int') + grad_colors
+    # band_grad_mask = band_grad_mask * 0.5
+
+    #band_grad_mask = cv2.equalizeHist(band_grad_mask) ### OPENCV
+    #band_grad_mask = cv2.medianBlur(band_grad_mask.astype('uint8'), 5)
+
+    outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXX_INTERSECT_GRADS" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
+    outdataset.GetRasterBand(1).WriteArray(band_grad_mask)
+
+    ### connectedComponentsWithStats ### connectedComponentsWithStats 
+    band_grad_mask_thr = (band_grad_mask >= 0.1 * 255)*255
+    nb_components, output, stats, centroids = cv2.connectedComponentsWithStats(band_grad_mask_thr.astype('uint8'), connectivity=8)
+    sizes = stats[1:, -1]; nb_components = nb_components - 1
+    # minimum size of particles we want to keep (number of pixels)
+    max_size = 2500
+    min_size = 75
+    #your answer image
+    cc_filter = np.zeros((band_grad_mask_thr.shape))
+    #for every component in the image, you keep it only if it's above min_size
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(77,77))
+    for i in range(0, nb_components):
+        if sizes[i] >= min_size and sizes[i] <= max_size:
+            cc_morph = cv2.morphologyEx(((output == i + 1) * 255).astype('uint8'), cv2.MORPH_CLOSE, kernel)
+            cc_filter[cc_morph > 0] = 255
+            #cc_filter[output == i + 1] = 255
+
+    band_grad_mask[cc_filter == 0] = 0
+
+    outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXX_INTERSECT_GRADS_FILTER" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
+    outdataset.GetRasterBand(1).WriteArray(band_grad_mask)
+
+    # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(77,77))
+    # band_grad_mask = cv2.morphologyEx(((band_grad_mask > 0) * 255).astype('uint8'), cv2.MORPH_CLOSE, kernel)
+
+    intersect = np.minimum(band_color_dif, cc_filter)
     #intersect[intersect > 255] = 255
-    outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXX_INTERSECT_BOTH" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
+    outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXX_INTERSECT_RES" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
     outdataset.GetRasterBand(1).WriteArray(intersect)
 
-    # intersect = (intersect >= 128)*1
-    # bound_mask = cv2.blur((img_bands[0] == 0) * 255,(5,5))
-
-
-    # ### INTERSECT THR ### INTERSECT THR ### INTERSECT THR 
-    # intersect = (intersect >= 128)*1
-    # bound_mask = cv2.blur((img_bands[0] == 0) * 255,(5,5))
-    # intersect[bound_mask > 0] = 0
-    # # cv2.morphologyEx
-    # kernel = np.ones((5,5),np.uint8)
-    # intersect = cv2.morphologyEx(intersect.astype('uint8'), cv2.MORPH_CLOSE, kernel)
-    # ### connectedComponentsWithStats ### connectedComponentsWithStats 
-    # nb_components, output, stats, centroids = cv2.connectedComponentsWithStats(intersect, connectivity=8)
-    # sizes = stats[1:, -1]; nb_components = nb_components - 1
-    # # minimum size of particles we want to keep (number of pixels)
-    # max_size = 9995
-    # min_size = 150
-    # #your answer image
-    # cc_filter = np.zeros((intersect.shape))
-    # #for every component in the image, you keep it only if it's above min_size
-    # for i in range(0, nb_components):
-    #     if sizes[i] >= min_size:
-    #         if sizes[i] <= max_size:
-    #             cc_filter[output == i + 1] = 1
-
-    # outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXX_RESULT" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
-    # outdataset.GetRasterBand(1).WriteArray(cc_filter*255)
-
-    # mask = decode_mask((cc_filter > 0).astype(bool))
-
-    intersect = (intersect > 128) * 255
+    ### THR RESULT ### THR RESULT ### THR RESULT ### THR RESULT 
+    intersect = (intersect > 0.5 * 255) * 255
+    intersect[bound_mask > 0] = 0
 
     outdataset = gdal.GetDriverByName('GTiff').Create( outfolder + outfile + "_XXXX_RESULT" + ".tif" , indataset.RasterXSize, indataset.RasterYSize, 1, gdal.GDT_Byte)
     outdataset.GetRasterBand(1).WriteArray(intersect)
@@ -226,6 +254,7 @@ from os import listdir
 
 Parallel(n_jobs=-1, verbose=0, backend="threading")(
              map(delayed(run_change_det), listdir(infolder)))
+             #map(delayed(run_change_det), [listdir(infolder)[1]]))
 
 file_submission.close()
 print("Done")
